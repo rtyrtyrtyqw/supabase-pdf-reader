@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Reader with Supabase</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+  <style>
+    #pdf-viewer { width: 100%; height: 100vh; overflow: auto; }
+    canvas { display: block; margin: auto; }
+    #login-btn { margin: 10px; padding: 10px; }
+  </style>
+</head>
+<body>
+  <button id="login-btn">Login with Google</button>
+  <div id="pdf-viewer"></div>
+
+  <script>
+    const supabaseUrl = 'https://ldbqdxfghcyxxfgullzl.supabase.co';
+    const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxkYnFkeGZnaGN5eHhmZ3VsbHpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkzMDY1NTIsImV4cCI6MjA2NDg4MjU1Mn0.Unq0e5aZYnw_AakEx1Jhxf5PwAa7SH1Cfce6qAbYOFc';
+    const supabase = supabase.createClient(supabaseUrl, supabaseKey);
+    let currentUser = null;
+    let pdfDoc = null;
+    let currentPage = 1;
+    const viewer = document.getElementById('pdf-viewer');
+
+    document.getElementById('login-btn').onclick = async () => {
+      const { data, error } = await supabase.auth.signInWithOAuth({ provider: 'google' });
+      if (error) console.error('Login error:', error);
+    };
+
+    supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session) {
+        currentUser = session.user;
+        document.getElementById('login-btn').style.display = 'none';
+        await loadPDF();
+      }
+    });
+
+    async function loadPDF() {
+      // 取得預簽名URL
+      const { data, error } = await supabase.storage
+        .from('pdfs')
+        .createSignedUrl('Grammar in Use.pdf', 3600);
+
+      if (error) return console.error('PDF URL error:', error);
+      const url = data.signedUrl;
+
+      const { data: progress } = await supabase
+        .from('reading_progress')
+        .select('last_page')
+        .eq('user_id', currentUser.id)
+        .single();
+
+      currentPage = progress?.last_page || 1;
+
+      const loadingTask = pdfjsLib.getDocument(url);
+      pdfDoc = await loadingTask.promise;
+      renderPage(currentPage);
+    }
+
+    async function renderPage(num) {
+      const page = await pdfDoc.getPage(num);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      const renderContext = { canvasContext: context, viewport: viewport };
+      await page.render(renderContext).promise;
+
+      viewer.innerHTML = '';
+      viewer.appendChild(canvas);
+
+      currentPage = num;
+      await updateProgress(num);
+    }
+
+    async function updateProgress(page) {
+      await supabase.from('reading_progress')
+        .upsert({ user_id: currentUser.id, last_page: page });
+    }
+
+    // 可加入左右按鍵翻頁功能
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' && currentPage < pdfDoc.numPages) {
+        renderPage(currentPage + 1);
+      } else if (e.key === 'ArrowLeft' && currentPage > 1) {
+        renderPage(currentPage - 1);
+      }
+    });
+  </script>
+</body>
+</html>
